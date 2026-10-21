@@ -85,6 +85,9 @@ h1{margin:0;font:900 clamp(1.8rem,4vw,2.5rem)/1.1 var(--f-display);letter-spacin
 .sheet.grid{background-image:linear-gradient(rgba(96,140,170,.28) 1px,transparent 1px),linear-gradient(90deg,rgba(96,140,170,.28) 1px,transparent 1px);background-size:calc(100% / 24) calc(100% / 32)}
 .sheet::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:100000;opacity:.5;mix-blend-mode:multiply;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .55 0 0 0 0 .5 0 0 0 0 .42 0 0 0 .35 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 .sheet.taping{cursor:crosshair}
+.sheet.reading::before{content:"写真を読み取っています…";position:absolute;inset:0;z-index:99998;display:grid;place-items:center;font:600 max(15px,3.6cqw)/1.4 var(--f-hand);color:#5b5548;background:rgba(241,234,217,.55);animation:readpulse 1.6s ease-in-out infinite}
+@keyframes readpulse{50%{background:rgba(241,234,217,.3)}}
+@media (prefers-reduced-motion:reduce){.sheet.reading::before{animation:none}}
 .empty{position:absolute;inset:0;display:grid;place-content:center;gap:10px;text-align:center;padding:12%;color:#7b7466;font:600 4cqw/1.6 var(--f-hand);pointer-events:none}
 .empty small{font:400 2.6cqw/1.6 var(--f-body)}
 .it{--p:.03;position:absolute;left:calc(var(--x)*100cqw);top:calc(var(--y)*100cqw);width:calc(var(--w)*100cqw);height:calc(var(--h)*100cqw);transform:translate(-50%,-50%) rotate(var(--r));cursor:grab}
@@ -817,9 +820,9 @@ function detectPieces(bmp){
   }
   // 1. the page: largest bright, low-saturation region
   const paper = new Uint8Array(N); for (let i=0;i<N;i++) paper[i] = L[i] > .55 && Sa[i] < .22 ? 1 : 0;
-  const pl = label(paper); if (!pl.comps.length) return [];
+  const pl = label(paper); if (!pl.comps.length) return {page:null, pieces:[]};
   const big = pl.comps.reduce((a,b) => b.area > a.area ? b : a);
-  if (big.area / N < .2) return [];
+  if (big.area / N < .2) return {page:null, pieces:[]};
   let page = new Uint8Array(N); for (let i=0;i<N;i++) page[i] = pl.lab[i] === big.id ? 1 : 0;
   page = morph(fill(close(page,3)), 2, false);
   // 2. things on the page: colour, dark ink or texture, measured as local density
@@ -844,9 +847,9 @@ function detectPieces(bmp){
     if (cp.area < .015*N || w < 8 || h < 8 || w*h > .8*N) continue;
     const pad = 1.5;
     const x0 = Math.max(0, cp.x0-pad), y0 = Math.max(0, cp.y0-pad), x1 = Math.min(W, cp.x1+1+pad), y1 = Math.min(H, cp.y1+1+pad);
-    out.push({x:x0/W, y:y0/H, w:(x1-x0)/W, h:(y1-y0)/H});
+    out.push({x:x0/W, y:y0/H, w:(x1-x0)/W, h:(y1-y0)/H, fill:cp.area/(w*h)});
   }
-  return out.sort((a,b) => a.y - b.y || a.x - b.x);
+  return {page:{x:big.x0/W, y:big.y0/H, w:(big.x1-big.x0+1)/W, h:(big.y1-big.y0+1)/H}, pieces:out.sort((a,b) => b.w*b.h - a.w*a.h)};
 }
 
 /* ---------- pasting: whole photos and cut pieces ---------- */
@@ -868,62 +871,160 @@ async function storeCanvas(c){
   const data = c.toDataURL('image/jpeg', .8); await getImg({data}).p;
   return {data, ar:c.width/c.height};
 }
-function addTapeOn(it){
+function addTapeOn(it, style, spot){
   const {w,h} = size(it), a = (it.r||0)*Math.PI/180;
-  const spots = [[0,-h/2,rand(-8,8)],[-w/2,-h/2,-45],[w/2,-h/2,45],[-w/2,h/2,45],[w/2,h/2,-45]];
-  const [lx,ly,tr] = pick(spots);
-  const tw = clamp(Math.min(w,h)*.55, .1, .24);
-  return addItem({t:'tape', style:pick(Object.keys(TAPES)), th:TAPE_H, w:tw, x:it.x + lx*Math.cos(a) - ly*Math.sin(a), y:it.y + lx*Math.sin(a) + ly*Math.cos(a), r:(it.r||0) + tr + rand(-6,6)}, {select:false});
+  const spots = {tl:[-w/2,-h/2,-40], tr:[w/2,-h/2,40], top:[0,-h/2,0], bl:[-w/2,h/2,40], br:[w/2,h/2,-40]};
+  const [lx,ly,tr] = spots[spot] || spots.top;
+  const tw = clamp(Math.min(w,h)*.5, .1, .22);
+  return addItem({t:'tape', style, th:TAPE_H, w:tw, x:it.x + lx*Math.cos(a) - ly*Math.sin(a), y:it.y + lx*Math.sin(a) + ly*Math.cos(a), r:(it.r||0) + tr + rand(-3,3)}, {select:false});
 }
-function pickFrame(edge){ return edge === 'auto' ? pick(['torn','torn','plain','white']) : edge; }
-async function pasteWhole(bmp, at, n, edge){
+const step = ms => sleep(RM ? 0 : ms);
+async function pasteWhole(bmp, at, n){
   const st = await storeCanvas(cropCanvas(bmp, {x:0,y:0,w:1,h:1}, S.assets ? 1800 : 900));
-  const off = n*.05;
-  const it = addItem({t:'photo', frame:edge === 'auto' ? pick(['white','white','torn']) : edge, ...st, w:clamp(rand(.4,.52),.2,.9),
-    x: at ? clamp(at.x+off,.1,.9) : rand(.32,.68), y: at ? clamp(at.y+off,.1,1.2) : rand(.35,.95), r:rand(-6,6)}, {select:false});
-  await sleep(RM ? 0 : 520);
-  if (it && Math.random() < .7){ addTapeOn(it); await sleep(RM ? 0 : 500); }
+  const slots = [[.36,.34],[.64,.62],[.38,.92],[.64,1.08]];
+  const [sx,sy] = slots[n % slots.length];
+  const it = addItem({t:'photo', frame:'white', ...st, w:.5, x: at ? clamp(at.x,.15,.85) : sx, y: at ? clamp(at.y,.15,1.2) : sy, r:(n % 2 ? 1 : -1)*rand(2,4)}, {select:false});
+  await step(560);
+  if (it){ addTapeOn(it, 'kraft', 'top'); await step(520); }
   return it;
 }
-async function pastePieces(bmp, res){
+
+/* ---------- reading a journal page: Claude first, pixel rules as fallback ---------- */
+const READ_PROMPT = `This image is a photo of one page of a handmade travel journal (a scrapbook). I will rebuild the page digitally, element by element, so I need every separate element that was pasted, written or drawn on it.
+
+Answer with JSON only, no prose, in exactly this shape:
+{"page":[x0,y0,x1,y1],"items":[ ... ]}
+
+"page" is the journal page itself inside the photo (leave out the desk, laptop, hands or anything around it).
+"items" lists the elements from the bottom-most layer to the top-most layer (things pasted later, on top, come later). Each item is one of:
+{"kind":"cutout","box":[x0,y0,x1,y1],"edge":"torn" or "cut","label":"short description"} - any pasted paper or picture: ticket, boarding pass, map, postcard, photo, flyer, receipt, label, wrapping paper. A sketch drawn directly on the page as a picture is also a cutout (edge "cut").
+{"kind":"text","box":[x0,y0,x1,y1],"text":"exact transcription, \\n between lines","color":"red" or "blue" or "navy" or "black" or "duo","style":"hand" or "marker"} - handwritten words such as titles, dates, notes. "duo" means letters drawn in two colours. "marker" means thick bold letters.
+{"kind":"tape","box":[x0,y0,x1,y1],"angle":degrees,"pattern":"dots" or "stripe" or "kraft" or "mint" or "check" or "clear"} - washi or masking tape. angle is the direction of the tape's length, 0 = horizontal, positive = clockwise.
+{"kind":"doodle","box":[x0,y0,x1,y1],"color":"duo" or "red" or "blue" or "navy"} - decorative swirls, wavy lines or borders drawn with a pen.
+{"kind":"stamp","box":[x0,y0,x1,y1],"text":"text in the stamp"} - rubber-stamp imprints.
+
+Coordinates are integers from 0 to 1000: x relative to the full photo width, y relative to the full photo height. Each box must tightly enclose that element's outline. When pieces overlap, give each piece its full outline, including the part hidden under another piece. Do not merge separate pieces. Ignore the page's own grid or ruled lines.
+If the photo is not a journal or scrapbook page (for example an ordinary travel photo), answer {"page":null,"items":[]}.`;
+let sampleCap;
+async function getSample(){
+  if (sampleCap !== undefined) return sampleCap;
+  sampleCap = null;
+  if (window.claude && window.claude.use){
+    try { const s = await window.claude.use('sample'); const lim = s ? await s.limits().catch(() => null) : null; if (s && lim && lim.images) sampleCap = s; } catch(e){}
+  }
+  return sampleCap;
+}
+function parseJSON(t){
+  if (t && typeof t === 'object') return t;
+  const m = String(t || '').match(/\{[\s\S]*\}/); if (!m) return null;
+  try { return JSON.parse(m[0]); } catch(e){ return null; }
+}
+async function photoBlob(bmp, max){
+  const c = cropCanvas(bmp, {x:0,y:0,w:1,h:1}, max);
+  return new Promise(r => c.toBlob(r, 'image/jpeg', .85));
+}
+async function readWithClaude(bmp){
+  const blob = await photoBlob(bmp, 1280);
+  const s = await getSample();
+  if (s){
+    const out = await s.json(READ_PROMPT, {images:[blob], modelTier:'default'});
+    return parseJSON(out);
+  }
+  if (window.claude) return null;
+  const b64 = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
+  const res = await fetch('api/analyze', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({image:b64})});
+  if (!res.ok) return null;
+  return parseJSON((await res.json()).text);
+}
+function normBox(b){
+  if (!Array.isArray(b) || b.length !== 4 || !b.every(v => isFinite(v))) return null;
+  let [x0,y0,x1,y1] = b.map(v => clamp(+v/1000, 0, 1));
+  if (x1 < x0) [x0,x1] = [x1,x0]; if (y1 < y0) [y0,y1] = [y1,y0];
+  return x1-x0 > .01 && y1-y0 > .01 ? {x:x0, y:y0, w:x1-x0, h:y1-y0} : null;
+}
+function cleanReading(A){
+  if (!A || !Array.isArray(A.items)) return null;
+  const page = normBox(A.page);
+  const items = A.items.map(it => ({...it, box:normBox(it.box)})).filter(it => it.box && ['cutout','text','tape','doodle','stamp'].includes(it.kind));
+  if (!page || !items.length) return {page:null, items:[]};
+  return {page, items};
+}
+function readWithPixels(bmp){
+  const d = detectPieces(bmp);
+  if (!d.pieces.length) return {page:null, items:[]};
+  return {page:d.page, items:d.pieces.map(p => ({kind:'cutout', box:p, edge:p.fill < .7 ? 'torn' : 'cut'})), pixels:true};
+}
+const INK = {red:'#d23b3b', blue:'#2f6bd1', navy:'#1f2a52', black:'#2a2826', duo:'duo'};
+const TAPE_OF = {dots:'dots', stripe:'stripe', kraft:'kraft', mint:'mint', check:'check', clear:'clear'};
+async function rebuildPage(bmp, A){
   const pa = bmp.height / bmp.width;
-  const rs = res.rects.map(r => ({...r, cx:r.x + r.w/2, cy:(r.y + r.h/2)*pa, pw:r.w, ph:r.h*pa})).sort((a,b) => b.pw*b.ph - a.pw*a.ph);
-  const bx0 = Math.min(...rs.map(r => r.cx - r.pw/2)), bx1 = Math.max(...rs.map(r => r.cx + r.pw/2));
-  const by0 = Math.min(...rs.map(r => r.cy - r.ph/2)), by1 = Math.max(...rs.map(r => r.cy + r.ph/2));
-  const sc = Math.min(.86/(bx1-bx0), 1.18/(by1-by0)), bcx = (bx0+bx1)/2, bcy = (by0+by1)/2;
-  let last = null;
-  for (let i=0;i<rs.length;i++){
-    const r = rs[i];
-    status(`紙片を切り抜いています（${i+1}/${rs.length}）`);
-    const st = await storeCanvas(cropCanvas(bmp, r, S.assets ? 1600 : 760));
-    const w = clamp(r.pw*sc, .12, .95);
-    const pos = res.layout === 'keep'
-      ? {x:.5 + (r.cx-bcx)*sc, y:.667 + (r.cy-bcy)*sc, r:rand(-3,3)}
-      : {x:rand(.25,.75), y:rand(.3,1.05), r:rand(-12,12)};
-    last = addItem({t:'photo', frame:pickFrame(res.edge), ...st, w, ...pos}, {select:false});
-    await sleep(RM ? 0 : 520);
-    if (last && Math.random() < .5){ addTapeOn(last); await sleep(RM ? 0 : 480); }
+  const P = A.page, pw = P.w, ph = P.h*pa, pcx = P.x + P.w/2, pcy = (P.y + P.h/2)*pa;
+  const sc = Math.min(.94/pw, 1.29/ph);
+  const at = (bx, by) => ({x:.5 + (bx - pcx)*sc, y:.667 + (by*pa - pcy)*sc});
+  const cutouts = [];
+  let last = null, hasTape = false, k = 0;
+  for (const it of A.items){
+    k++;
+    const b = it.box, c = at(b.x + b.w/2, b.y + b.h/2), bw = b.w*sc, bh = b.h*pa*sc;
+    status(`ページを組み立てています（${k}/${A.items.length}）`);
+    if (it.kind === 'cutout'){
+      const m = .004;
+      const st = await storeCanvas(cropCanvas(bmp, {x:Math.max(0,b.x-m), y:Math.max(0,b.y-m), w:Math.min(1-b.x+m, b.w+2*m), h:Math.min(1-b.y+m, b.h+2*m)}, S.assets ? 1600 : 760));
+      last = addItem({t:'photo', frame: it.edge === 'torn' ? 'torn' : 'plain', ...st, w:clamp(bw,.06,1.1), ...c, r:rand(-1.5,1.5)}, {select:false});
+      if (last) cutouts.push(last);
+      await step(560);
+    } else if (it.kind === 'text' && String(it.text||'').trim()){
+      const text = String(it.text).trim().slice(0,200), lines = text.split('\n').length;
+      const f = it.style === 'marker' ? 'marker' : 'hand';
+      const fs = clamp(bh/(lines*1.32), .025, .2);
+      last = addItem({t:'text', text, f, fs, c:INK[it.color] || '#1f2a52', ...c, r:rand(-2,2)}, {select:false});
+      await step(Math.min(1400, 300 + text.length*70));
+    } else if (it.kind === 'tape'){
+      const ang = isFinite(it.angle) ? +it.angle : (bw >= bh ? 0 : 90), rad = ang*Math.PI/180;
+      const cs = Math.abs(Math.cos(rad)), sn = Math.abs(Math.sin(rad));
+      const len = clamp(cs >= sn ? bw/Math.max(cs,.3) : bh/Math.max(sn,.3), .08, 1.2);
+      const th = clamp((cs >= sn ? bh : bw) - len*Math.min(cs, sn), TAPE_H*.8, TAPE_H*1.8);
+      last = addItem({t:'tape', style:TAPE_OF[it.pattern] || 'kraft', th, w:len, ...c, r:ang}, {select:false});
+      hasTape = true;
+      await step(380 + len*500);
+    } else if (it.kind === 'doodle'){
+      const tall = bh > bw*1.3;
+      last = addItem({t:'swirl', c:INK[it.color] && it.color !== 'black' ? (it.color === 'duo' ? 'duo' : INK[it.color]) : 'duo', w:clamp(tall ? bh : bw, .1, 1), ...c, r: tall ? 90 : 0}, {select:false});
+      await step(900);
+    } else if (it.kind === 'stamp'){
+      last = addItem({t:'hanko', text:String(it.text||'').slice(0,14) || '済', w:clamp(bw,.1,.4), ...c, r:rand(-8,8)}, {select:false});
+      await step(360);
+    }
+  }
+  if (!hasTape && cutouts.length){
+    const big = [...cutouts].sort((a,b) => b.w*size(b).h - a.w*size(a).h);
+    const style = A.pixels ? 'kraft' : pick(['kraft','clear']);
+    addTapeOn(big[0], style, 'tl'); await step(520);
+    if (big[1]){ addTapeOn(big[1], style, 'tr'); await step(520); }
   }
   return last;
 }
 async function addPhotos(files, at){
   if (!S.cur) return status('先に旅のページを追加してください');
   if (!S.local && !S.assets) return status('この表示では写真を追加できません');
-  const list = [...files].filter(isImage); let pasted = 0, last = null;
+  const list = [...files].filter(isImage); let pasted = 0, last = null, whole = 0;
   for (let i=0;i<list.length;i++){
-    status(`写真を読み込んでいます（${i+1}/${list.length}）`);
     let bmp;
     try { bmp = await decode(list[i]); } catch(err){ status(`「${list[i].name}」を読み込めませんでした。JPEGやPNGで試してください`); continue; }
-    const rects = detectPieces(bmp);
-    const res = rects.length ? {action:'pieces', rects, edge:'auto', layout:'keep'} : {action:'whole', edge:'auto'};
-    if (rects.length) status(`写真から${rects.length}枚の紙片を切り抜いています`);
+    status(`写真を読み取っています（${i+1}/${list.length}）…`); sheet.classList.add('reading');
+    let A = null;
+    try { A = cleanReading(await readWithClaude(bmp)); } catch(err){ A = null; }
+    if (!A) A = readWithPixels(bmp);
+    sheet.classList.remove('reading');
     try {
-      last = res.action === 'whole' ? await pasteWhole(bmp, at, pasted, res.edge) : await pastePieces(bmp, res);
+      if (A.page && A.items.length) last = await rebuildPage(bmp, A);
+      else last = await pasteWhole(bmp, at, whole++);
       pasted++;
     } catch(err){
       status(err?.code === 'quota_exceeded' || err?.code === 'too_large' ? '写真の保存容量がいっぱいです' : '写真を貼れませんでした。もう一度お試しください');
     }
   }
+  sheet.classList.remove('reading');
   if (last) selectItem(last.id);
   if (pasted) status(`${pasted}枚の写真を切り貼りしました`);
 }
