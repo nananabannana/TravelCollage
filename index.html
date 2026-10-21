@@ -183,6 +183,22 @@ h1{margin:0;font:900 clamp(1.8rem,4vw,2.5rem)/1.1 var(--f-display);letter-spacin
 .card-sub{margin:0;font-size:12px;color:var(--muted);line-height:1.5}
 .linkbtn{appearance:none;cursor:pointer;justify-self:start;padding:2px 0;border:0;background:none;color:var(--tape);font:700 12px/1.4 var(--f-body);text-decoration:underline;text-underline-offset:3px}
 
+.cutter{position:fixed;inset:0;z-index:200002;background:rgba(14,15,18,.92);overflow:auto;display:grid;justify-items:center;align-content:start;padding-block:max(14px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.cutter[hidden]{display:none}
+.cut-in{width:min(100%,900px);display:grid;gap:12px;justify-items:center}
+.cut-in>.book-top,.cut-in>.hint,.cut-opts,.cut-actions{width:100%}
+.cut-stage{position:relative;max-width:100%;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.cut-stage canvas{display:block;width:100%;height:100%}
+.cut-boxes{position:absolute;inset:0;cursor:crosshair;touch-action:none}
+.cbox{position:absolute;border:2px dashed var(--tape);background:rgba(233,196,106,.14);box-shadow:0 0 0 9999px rgba(0,0,0,.0);cursor:move}
+.cnum{position:absolute;left:-2px;top:-2px;min-width:20px;height:20px;padding:0 4px;background:var(--tape);color:var(--chip-ink);font:700 12px/20px var(--f-body);text-align:center}
+.cx{position:absolute;right:-12px;top:-12px;width:26px;height:26px;border-radius:50%;border:2px solid #fff8ee;background:var(--stamp);color:#fff8ee;font:700 15px/1 var(--f-body);cursor:pointer;padding:0}
+.ch{position:absolute;width:16px;height:16px;background:#fff8ee;border:2px solid var(--tape);border-radius:50%}
+.ch.nw{left:-9px;top:-9px;cursor:nwse-resize}.ch.ne{right:-9px;top:-9px;cursor:nesw-resize}.ch.sw{left:-9px;bottom:-9px;cursor:nesw-resize}.ch.se{right:-9px;bottom:-9px;cursor:nwse-resize}
+.cut-opts{display:flex;flex-wrap:wrap;gap:12px 28px}
+.cut-actions{justify-content:flex-end}
+.cutter .btn.solid{background:var(--tape);border-color:var(--tape);color:var(--chip-ink)}
+.cutter .btn:disabled{opacity:.4;cursor:default}
 .picker{position:fixed;inset:0;z-index:200001;background:rgba(10,11,13,.82);display:grid;place-items:center;padding-block:max(14px,env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .picker[hidden]{display:none}
 .picker-in{width:min(100%,980px);display:grid;gap:10px}
@@ -293,6 +309,19 @@ h1{margin:0;font:900 clamp(1.8rem,4vw,2.5rem)/1.1 var(--f-display);letter-spacin
     </main>
   </div>
   <p class="status" id="status" role="status"></p>
+</div>
+
+<div class="cutter" id="cutter" hidden role="dialog" aria-modal="true" aria-label="切り抜き台">
+  <div class="cut-in">
+    <div class="book-top"><p class="book-title">切り抜き台 <span id="cutCount"></span></p><button class="btn" id="cutSkip" type="button">この写真は貼らない</button></div>
+    <p class="hint" id="cutHint"></p>
+    <div class="cut-stage" id="cutStage"><canvas id="cutCanvas"></canvas><div class="cut-boxes" id="cutBoxes"></div></div>
+    <div class="cut-opts">
+      <div class="group"><span class="group-label">フチ</span><div class="row"><button class="chip" type="button" data-edge="auto">おまかせ</button><button class="chip" type="button" data-edge="torn">ちぎり</button><button class="chip" type="button" data-edge="plain">はさみ</button><button class="chip" type="button" data-edge="white">白フチ</button></div></div>
+      <div class="group"><span class="group-label">紙片の置き方</span><div class="row"><button class="chip" type="button" data-layout="keep">元の配置</button><button class="chip" type="button" data-layout="scatter">ばらばらに</button></div></div>
+    </div>
+    <div class="row cut-actions"><button class="btn" id="cutWhole" type="button">1枚の写真として貼る</button><button class="btn solid" id="cutGo" type="button">紙片を貼る</button></div>
+  </div>
 </div>
 
 <div class="picker" id="picker" hidden role="dialog" aria-modal="true" aria-label="地図で場所を選ぶ">
@@ -768,33 +797,243 @@ async function shrink(bmp, max, q){
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
   return {canvas:c, blob: await new Promise(r => c.toBlob(r, 'image/jpeg', q)), ar: bmp.width/bmp.height};
 }
+/* ---------- piece detection: find paper pieces laid on a journal page ---------- */
+function detectPieces(bmp){
+  const W = 200, H = Math.max(8, Math.round(bmp.height * W / bmp.width)), N = W*H;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const cx = c.getContext('2d'); cx.drawImage(bmp, 0, 0, W, H);
+  const px = cx.getImageData(0, 0, W, H).data;
+  const L = new Float32Array(N), Sa = new Float32Array(N);
+  for (let i=0;i<N;i++){
+    const r = px[i*4]/255, g = px[i*4+1]/255, b = px[i*4+2]/255, mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+    L[i] = .299*r + .587*g + .114*b; Sa[i] = mx > 0 ? (mx-mn)/mx : 0;
+  }
+  const NB = [[1,0],[-1,0],[0,1],[0,-1]];
+  function label(m){
+    const lab = new Int32Array(N), comps = []; let n = 0;
+    for (let s=0;s<N;s++){
+      if (!m[s] || lab[s]) continue;
+      n++; const st = [s]; lab[s] = n; let area = 0, x0 = W, y0 = H, x1 = 0, y1 = 0;
+      while (st.length){
+        const p = st.pop(), x = p % W, y = (p / W) | 0; area++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        for (const [dx,dy] of NB){ const nx = x+dx, ny = y+dy; if (nx<0||ny<0||nx>=W||ny>=H) continue; const q = ny*W+nx; if (m[q] && !lab[q]){ lab[q] = n; st.push(q); } }
+      }
+      comps.push({id:n, area, x0, y0, x1, y1});
+    }
+    return {lab, comps};
+  }
+  function morph(m, it, dil){
+    let a = m;
+    for (let k=0;k<it;k++){
+      const o = new Uint8Array(N);
+      for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+        const i = y*W+x; let v = a[i];
+        for (const [dx,dy] of NB){ const nx = x+dx, ny = y+dy; const q = (nx<0||ny<0||nx>=W||ny>=H) ? 0 : a[ny*W+nx]; if (dil ? q : !q){ v = dil ? 1 : 0; break; } }
+        o[i] = v;
+      }
+      a = o;
+    }
+    return a;
+  }
+  const close = (m,it) => morph(morph(m,it,true),it,false), open = (m,it) => morph(morph(m,it,false),it,true);
+  function fill(m){
+    const out = Uint8Array.from(m), seen = new Uint8Array(N), st = [];
+    for (let x=0;x<W;x++){ st.push(x, (H-1)*W+x); } for (let y=0;y<H;y++){ st.push(y*W, y*W+W-1); }
+    while (st.length){ const p = st.pop(); if (seen[p] || m[p]) continue; seen[p] = 1; const x = p % W, y = (p/W)|0; for (const [dx,dy] of NB){ const nx = x+dx, ny = y+dy; if (nx>=0&&ny>=0&&nx<W&&ny<H) st.push(ny*W+nx); } }
+    for (let i=0;i<N;i++) if (!m[i] && !seen[i]) out[i] = 1;
+    return out;
+  }
+  // 1. the page: largest bright, low-saturation region
+  const paper = new Uint8Array(N); for (let i=0;i<N;i++) paper[i] = L[i] > .55 && Sa[i] < .22 ? 1 : 0;
+  const pl = label(paper); if (!pl.comps.length) return [];
+  const big = pl.comps.reduce((a,b) => b.area > a.area ? b : a);
+  if (big.area / N < .2) return [];
+  let page = new Uint8Array(N); for (let i=0;i<N;i++) page[i] = pl.lab[i] === big.id ? 1 : 0;
+  page = morph(fill(close(page,3)), 2, false);
+  // 2. things on the page: colour, dark ink or texture, measured as local density
+  const content = new Uint8Array(N);
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    const i = y*W+x, gx = Math.abs(L[Math.min(i+1, y*W+W-1)] - L[i]), gy = Math.abs(L[Math.min(i+W, N-W+x)] - L[i]);
+    content[i] = (Sa[i] > .25 && L[i] < .97) || L[i] < .5 || gx + gy > .16 ? 1 : 0;
+  }
+  const I = new Float32Array((W+1)*(H+1));
+  for (let y=0;y<H;y++){ let row = 0; for (let x=0;x<W;x++){ row += content[y*W+x]; I[(y+1)*(W+1)+x+1] = I[y*(W+1)+x+1] + row; } }
+  const R = 4; let item = new Uint8Array(N);
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    const x0 = Math.max(0,x-R), y0 = Math.max(0,y-R), x1 = Math.min(W,x+R+1), y1 = Math.min(H,y+R+1);
+    const s = I[y1*(W+1)+x1] - I[y0*(W+1)+x1] - I[y1*(W+1)+x0] + I[y0*(W+1)+x0];
+    item[y*W+x] = page[y*W+x] && s/((x1-x0)*(y1-y0)) > .36 ? 1 : 0;
+  }
+  item = fill(open(close(item,3),2));
+  // 3. rectangles around each piece
+  const out = [];
+  for (const cp of label(item).comps){
+    const w = cp.x1-cp.x0+1, h = cp.y1-cp.y0+1;
+    if (cp.area < .015*N || w < 8 || h < 8 || w*h > .8*N) continue;
+    const pad = 1.5;
+    const x0 = Math.max(0, cp.x0-pad), y0 = Math.max(0, cp.y0-pad), x1 = Math.min(W, cp.x1+1+pad), y1 = Math.min(H, cp.y1+1+pad);
+    out.push({x:x0/W, y:y0/H, w:(x1-x0)/W, h:(y1-y0)/H});
+  }
+  return out.sort((a,b) => a.y - b.y || a.x - b.x);
+}
+
+/* ---------- cutting board ---------- */
+const CT = {bmp:null, rects:[], edge:'auto', layout:'keep', resolve:null};
+const cutter = $('#cutter'), cutBoxes = $('#cutBoxes'), cutCanvas = $('#cutCanvas');
+function renderCutBoxes(){
+  cutBoxes.innerHTML = CT.rects.map((r,i) => `<div class="cbox" data-i="${i}" style="left:${r.x*100}%;top:${r.y*100}%;width:${r.w*100}%;height:${r.h*100}%">
+    <span class="cnum">${i+1}</span><button class="cx" type="button" data-i="${i}" aria-label="${i+1}番目の枠を消す">×</button>
+    <i class="ch nw" data-c="nw"></i><i class="ch ne" data-c="ne"></i><i class="ch sw" data-c="sw"></i><i class="ch se" data-c="se"></i></div>`).join('');
+  const n = CT.rects.length;
+  $('#cutGo').disabled = !n;
+  $('#cutGo').textContent = n ? `紙片を貼る（${n}枚）` : '紙片を貼る';
+  $('#cutGo').classList.toggle('solid', n > 0); $('#cutWhole').classList.toggle('solid', n === 0);
+  $('#cutHint').textContent = n ? `${n}枚の紙片に分けました。枠はドラッグで移動、角で大きさを変えられます。写真の上をなぞると枠を追加、×で消せます。`
+    : '切り抜く紙片が見つかりませんでした。写真の上をなぞると切り抜く枠をつくれます。そのまま貼るなら「1枚の写真として貼る」を選んでください。';
+}
+function openCutter(bmp, idx, total){
+  return new Promise(resolve => {
+    CT.bmp = bmp; CT.resolve = resolve;
+    CT.rects = detectPieces(bmp);
+    const vw = Math.min(innerWidth - 40, 900), vh = innerHeight * .56;
+    const k = Math.min(vw / bmp.width, vh / bmp.height);
+    const cw = Math.round(bmp.width*k), ch = Math.round(bmp.height*k), d = Math.min(2, devicePixelRatio || 1);
+    cutCanvas.width = cw*d; cutCanvas.height = ch*d;
+    $('#cutStage').style.width = cw + 'px'; $('#cutStage').style.height = ch + 'px';
+    cutCanvas.getContext('2d').drawImage(bmp, 0, 0, cutCanvas.width, cutCanvas.height);
+    $('#cutCount').textContent = total > 1 ? `${idx+1} / ${total}` : '';
+    cutter.querySelectorAll('[data-edge]').forEach(b => b.setAttribute('aria-pressed', b.dataset.edge === CT.edge));
+    cutter.querySelectorAll('[data-layout]').forEach(b => b.setAttribute('aria-pressed', b.dataset.layout === CT.layout));
+    renderCutBoxes();
+    cutter.hidden = false; document.body.style.overflow = 'hidden';
+    ($('#cutGo').disabled ? $('#cutWhole') : $('#cutGo')).focus();
+  });
+}
+function finishCut(action){
+  cutter.hidden = true; document.body.style.overflow = '';
+  const r = CT.resolve; CT.resolve = null;
+  r && r({action, rects:CT.rects.map(x => ({...x})), edge:CT.edge, layout:CT.layout});
+}
+$('#cutGo').addEventListener('click', () => finishCut('pieces'));
+$('#cutWhole').addEventListener('click', () => finishCut('whole'));
+$('#cutSkip').addEventListener('click', () => finishCut('skip'));
+cutter.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.edge){ CT.edge = b.dataset.edge; cutter.querySelectorAll('[data-edge]').forEach(x => x.setAttribute('aria-pressed', x === b)); }
+  if (b.dataset.layout){ CT.layout = b.dataset.layout; cutter.querySelectorAll('[data-layout]').forEach(x => x.setAttribute('aria-pressed', x === b)); }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !cutter.hidden){ e.preventDefault(); finishCut('skip'); } }, true);
+cutBoxes.addEventListener('pointerdown', e => {
+  if (e.button > 0) return;
+  const rr = cutBoxes.getBoundingClientRect();
+  const P = ev => ({x:clamp((ev.clientX-rr.left)/rr.width,0,1), y:clamp((ev.clientY-rr.top)/rr.height,0,1)});
+  const x = e.target.closest('.cx');
+  if (x){ e.preventDefault(); CT.rects.splice(+x.dataset.i, 1); renderCutBoxes(); return; }
+  e.preventDefault();
+  try { cutBoxes.setPointerCapture(e.pointerId); } catch(_){}
+  const p0 = P(e), h = e.target.closest('.ch'), bx = e.target.closest('.cbox');
+  let r, mode;
+  if (h){ r = CT.rects[+bx.dataset.i]; mode = h.dataset.c; }
+  else if (bx){ r = CT.rects[+bx.dataset.i]; mode = 'move'; }
+  else { r = {x:p0.x, y:p0.y, w:0, h:0}; CT.rects.push(r); mode = 'new'; }
+  const r0 = {...r};
+  const mv = ev => {
+    const p = P(ev), dx = p.x - p0.x, dy = p.y - p0.y;
+    if (mode === 'move'){ r.x = clamp(r0.x+dx, 0, 1-r.w); r.y = clamp(r0.y+dy, 0, 1-r.h); }
+    else if (mode === 'new'){ r.x = Math.min(p0.x,p.x); r.y = Math.min(p0.y,p.y); r.w = Math.abs(dx); r.h = Math.abs(dy); }
+    else {
+      let x0 = r0.x, y0 = r0.y, x1 = r0.x+r0.w, y1 = r0.y+r0.h;
+      if (mode.includes('w')) x0 = clamp(x0+dx, 0, x1-.03); if (mode.includes('e')) x1 = clamp(x1+dx, x0+.03, 1);
+      if (mode.includes('n')) y0 = clamp(y0+dy, 0, y1-.03); if (mode.includes('s')) y1 = clamp(y1+dy, y0+.03, 1);
+      r.x = x0; r.y = y0; r.w = x1-x0; r.h = y1-y0;
+    }
+    renderCutBoxes();
+  };
+  const up = () => {
+    cutBoxes.removeEventListener('pointermove', mv); cutBoxes.removeEventListener('pointerup', up); cutBoxes.removeEventListener('pointercancel', up);
+    if (mode === 'new' && (r.w < .03 || r.h < .03)) CT.rects.splice(CT.rects.indexOf(r), 1);
+    renderCutBoxes();
+  };
+  cutBoxes.addEventListener('pointermove', mv); cutBoxes.addEventListener('pointerup', up); cutBoxes.addEventListener('pointercancel', up);
+});
+
+/* ---------- pasting: whole photos and cut pieces ---------- */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function cropCanvas(bmp, r, max){
+  const sx = r.x*bmp.width, sy = r.y*bmp.height, sw = Math.max(1, r.w*bmp.width), sh = Math.max(1, r.h*bmp.height);
+  const k = Math.min(1, max/Math.max(sw, sh)), c = document.createElement('canvas');
+  c.width = Math.round(sw*k); c.height = Math.round(sh*k);
+  c.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+async function storeCanvas(c){
+  if (S.assets){
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', .86));
+    const res = await S.assets.upload(blob, {type:'image/jpeg'});
+    urlCache.set(res.id, res.url); await getImg({src:res.id}).p;
+    return {src:res.id, ar:c.width/c.height};
+  }
+  const data = c.toDataURL('image/jpeg', .8); await getImg({data}).p;
+  return {data, ar:c.width/c.height};
+}
+function addTapeOn(it){
+  const {w,h} = size(it), a = (it.r||0)*Math.PI/180;
+  const spots = [[0,-h/2,rand(-8,8)],[-w/2,-h/2,-45],[w/2,-h/2,45],[-w/2,h/2,45],[w/2,h/2,-45]];
+  const [lx,ly,tr] = pick(spots);
+  const tw = clamp(Math.min(w,h)*.55, .1, .24);
+  return addItem({t:'tape', style:pick(Object.keys(TAPES)), th:TAPE_H, w:tw, x:it.x + lx*Math.cos(a) - ly*Math.sin(a), y:it.y + lx*Math.sin(a) + ly*Math.cos(a), r:(it.r||0) + tr + rand(-6,6)}, {select:false});
+}
+function pickFrame(edge){ return edge === 'auto' ? pick(['torn','torn','plain','white']) : edge; }
+async function pasteWhole(bmp, at, n, edge){
+  const st = await storeCanvas(cropCanvas(bmp, {x:0,y:0,w:1,h:1}, S.assets ? 1800 : 900));
+  const off = n*.05;
+  const it = addItem({t:'photo', frame:edge === 'auto' ? pick(['white','white','torn']) : edge, ...st, w:clamp(rand(.4,.52),.2,.9),
+    x: at ? clamp(at.x+off,.1,.9) : rand(.32,.68), y: at ? clamp(at.y+off,.1,1.2) : rand(.35,.95), r:rand(-6,6)}, {select:false});
+  await sleep(RM ? 0 : 520);
+  if (it && Math.random() < .7){ addTapeOn(it); await sleep(RM ? 0 : 500); }
+  return it;
+}
+async function pastePieces(bmp, res){
+  const pa = bmp.height / bmp.width;
+  const rs = res.rects.map(r => ({...r, cx:r.x + r.w/2, cy:(r.y + r.h/2)*pa, pw:r.w, ph:r.h*pa})).sort((a,b) => b.pw*b.ph - a.pw*a.ph);
+  const bx0 = Math.min(...rs.map(r => r.cx - r.pw/2)), bx1 = Math.max(...rs.map(r => r.cx + r.pw/2));
+  const by0 = Math.min(...rs.map(r => r.cy - r.ph/2)), by1 = Math.max(...rs.map(r => r.cy + r.ph/2));
+  const sc = Math.min(.86/(bx1-bx0), 1.18/(by1-by0)), bcx = (bx0+bx1)/2, bcy = (by0+by1)/2;
+  let last = null;
+  for (let i=0;i<rs.length;i++){
+    const r = rs[i];
+    status(`紙片を切り抜いています（${i+1}/${rs.length}）`);
+    const st = await storeCanvas(cropCanvas(bmp, r, S.assets ? 1600 : 760));
+    const w = clamp(r.pw*sc, .12, .95);
+    const pos = res.layout === 'keep'
+      ? {x:.5 + (r.cx-bcx)*sc, y:.667 + (r.cy-bcy)*sc, r:rand(-3,3)}
+      : {x:rand(.25,.75), y:rand(.3,1.05), r:rand(-12,12)};
+    last = addItem({t:'photo', frame:pickFrame(res.edge), ...st, w, ...pos}, {select:false});
+    await sleep(RM ? 0 : 520);
+    if (last && Math.random() < .5){ addTapeOn(last); await sleep(RM ? 0 : 480); }
+  }
+  return last;
+}
 async function addPhotos(files, at){
   if (!S.cur) return status('先に旅のページを追加してください');
-  const list = [...files]; let n = 0;
-  for (const f of list){
-    n++; status(`写真を準備しています（${n}/${list.length}）`);
+  if (!S.local && !S.assets) return status('この表示では写真を追加できません');
+  const list = [...files].filter(isImage); let pasted = 0, last = null;
+  for (let i=0;i<list.length;i++){
+    status(`写真を読み込んでいます（${i+1}/${list.length}）`);
+    let bmp;
+    try { bmp = await decode(list[i]); } catch(err){ status(`「${list[i].name}」を読み込めませんでした。JPEGやPNGで試してください`); continue; }
+    const res = await openCutter(bmp, i, list.length);
+    if (res.action === 'skip') continue;
     try {
-      const bmp = await decode(f);
-      const off = (n-1)*.05;
-      const it0 = {t:'photo', frame:'white', w:clamp(rand(.38,.5),.2,.9), x: at ? clamp(at.x + off, .1, .9) : rand(.32,.68), y: at ? clamp(at.y + off, .1, 1.2) : rand(.35,.95), r:rand(-6,6)};
-      if (S.assets){
-        const {blob, ar} = await shrink(bmp, 1800, .86);
-        const res = await S.assets.upload(blob, {type:'image/jpeg'});
-        urlCache.set(res.id, res.url);
-        await getImg({src:res.id}).p;
-        addItem({...it0, src:res.id, ar}, {select: n === list.length});
-      } else {
-        const {canvas, ar} = await shrink(bmp, 900, .8);
-        const data = canvas.toDataURL('image/jpeg', .8);
-        await getImg({data}).p;
-        addItem({...it0, data, ar}, {select: n === list.length});
-      }
-      await new Promise(r => setTimeout(r, 420));
+      last = res.action === 'whole' ? await pasteWhole(bmp, at, pasted, res.edge) : await pastePieces(bmp, res);
+      pasted++;
     } catch(err){
-      status(err?.code === 'quota_exceeded' || err?.code === 'too_large' ? '写真の保存容量がいっぱいです' : `「${f.name}」を読み込めませんでした。JPEGやPNGで試してください`);
+      status(err?.code === 'quota_exceeded' || err?.code === 'too_large' ? '写真の保存容量がいっぱいです' : '写真を貼れませんでした。もう一度お試しください');
     }
   }
-  if (n) status(`${n}枚の写真を貼りました`);
+  if (last) selectItem(last.id);
+  if (pasted) status(`${pasted}枚の写真から貼りました`);
 }
 
 /* ---------- drag & drop, photo metadata ---------- */
