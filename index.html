@@ -183,22 +183,6 @@ h1{margin:0;font:900 clamp(1.8rem,4vw,2.5rem)/1.1 var(--f-display);letter-spacin
 .card-sub{margin:0;font-size:12px;color:var(--muted);line-height:1.5}
 .linkbtn{appearance:none;cursor:pointer;justify-self:start;padding:2px 0;border:0;background:none;color:var(--tape);font:700 12px/1.4 var(--f-body);text-decoration:underline;text-underline-offset:3px}
 
-.cutter{position:fixed;inset:0;z-index:200002;background:rgba(14,15,18,.92);overflow:auto;display:grid;justify-items:center;align-content:start;padding-block:max(14px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
-.cutter[hidden]{display:none}
-.cut-in{width:min(100%,900px);display:grid;gap:12px;justify-items:center}
-.cut-in>.book-top,.cut-in>.hint,.cut-opts,.cut-actions{width:100%}
-.cut-stage{position:relative;max-width:100%;box-shadow:0 10px 30px rgba(0,0,0,.5)}
-.cut-stage canvas{display:block;width:100%;height:100%}
-.cut-boxes{position:absolute;inset:0;cursor:crosshair;touch-action:none}
-.cbox{position:absolute;border:2px dashed var(--tape);background:rgba(233,196,106,.14);box-shadow:0 0 0 9999px rgba(0,0,0,.0);cursor:move}
-.cnum{position:absolute;left:-2px;top:-2px;min-width:20px;height:20px;padding:0 4px;background:var(--tape);color:var(--chip-ink);font:700 12px/20px var(--f-body);text-align:center}
-.cx{position:absolute;right:-12px;top:-12px;width:26px;height:26px;border-radius:50%;border:2px solid #fff8ee;background:var(--stamp);color:#fff8ee;font:700 15px/1 var(--f-body);cursor:pointer;padding:0}
-.ch{position:absolute;width:16px;height:16px;background:#fff8ee;border:2px solid var(--tape);border-radius:50%}
-.ch.nw{left:-9px;top:-9px;cursor:nwse-resize}.ch.ne{right:-9px;top:-9px;cursor:nesw-resize}.ch.sw{left:-9px;bottom:-9px;cursor:nesw-resize}.ch.se{right:-9px;bottom:-9px;cursor:nwse-resize}
-.cut-opts{display:flex;flex-wrap:wrap;gap:12px 28px}
-.cut-actions{justify-content:flex-end}
-.cutter .btn.solid{background:var(--tape);border-color:var(--tape);color:var(--chip-ink)}
-.cutter .btn:disabled{opacity:.4;cursor:default}
 .picker{position:fixed;inset:0;z-index:200001;background:rgba(10,11,13,.82);display:grid;place-items:center;padding-block:max(14px,env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .picker[hidden]{display:none}
 .picker-in{width:min(100%,980px);display:grid;gap:10px}
@@ -309,19 +293,6 @@ h1{margin:0;font:900 clamp(1.8rem,4vw,2.5rem)/1.1 var(--f-display);letter-spacin
     </main>
   </div>
   <p class="status" id="status" role="status"></p>
-</div>
-
-<div class="cutter" id="cutter" hidden role="dialog" aria-modal="true" aria-label="切り抜き台">
-  <div class="cut-in">
-    <div class="book-top"><p class="book-title">切り抜き台 <span id="cutCount"></span></p><button class="btn" id="cutSkip" type="button">この写真は貼らない</button></div>
-    <p class="hint" id="cutHint"></p>
-    <div class="cut-stage" id="cutStage"><canvas id="cutCanvas"></canvas><div class="cut-boxes" id="cutBoxes"></div></div>
-    <div class="cut-opts">
-      <div class="group"><span class="group-label">フチ</span><div class="row"><button class="chip" type="button" data-edge="auto">おまかせ</button><button class="chip" type="button" data-edge="torn">ちぎり</button><button class="chip" type="button" data-edge="plain">はさみ</button><button class="chip" type="button" data-edge="white">白フチ</button></div></div>
-      <div class="group"><span class="group-label">紙片の置き方</span><div class="row"><button class="chip" type="button" data-layout="keep">元の配置</button><button class="chip" type="button" data-layout="scatter">ばらばらに</button></div></div>
-    </div>
-    <div class="row cut-actions"><button class="btn" id="cutWhole" type="button">1枚の写真として貼る</button><button class="btn solid" id="cutGo" type="button">紙片を貼る</button></div>
-  </div>
 </div>
 
 <div class="picker" id="picker" hidden role="dialog" aria-modal="true" aria-label="地図で場所を選ぶ">
@@ -878,86 +849,6 @@ function detectPieces(bmp){
   return out.sort((a,b) => a.y - b.y || a.x - b.x);
 }
 
-/* ---------- cutting board ---------- */
-const CT = {bmp:null, rects:[], edge:'auto', layout:'keep', resolve:null};
-const cutter = $('#cutter'), cutBoxes = $('#cutBoxes'), cutCanvas = $('#cutCanvas');
-function renderCutBoxes(){
-  cutBoxes.innerHTML = CT.rects.map((r,i) => `<div class="cbox" data-i="${i}" style="left:${r.x*100}%;top:${r.y*100}%;width:${r.w*100}%;height:${r.h*100}%">
-    <span class="cnum">${i+1}</span><button class="cx" type="button" data-i="${i}" aria-label="${i+1}番目の枠を消す">×</button>
-    <i class="ch nw" data-c="nw"></i><i class="ch ne" data-c="ne"></i><i class="ch sw" data-c="sw"></i><i class="ch se" data-c="se"></i></div>`).join('');
-  const n = CT.rects.length;
-  $('#cutGo').disabled = !n;
-  $('#cutGo').textContent = n ? `紙片を貼る（${n}枚）` : '紙片を貼る';
-  $('#cutGo').classList.toggle('solid', n > 0); $('#cutWhole').classList.toggle('solid', n === 0);
-  $('#cutHint').textContent = n ? `${n}枚の紙片に分けました。枠はドラッグで移動、角で大きさを変えられます。写真の上をなぞると枠を追加、×で消せます。`
-    : '切り抜く紙片が見つかりませんでした。写真の上をなぞると切り抜く枠をつくれます。そのまま貼るなら「1枚の写真として貼る」を選んでください。';
-}
-function openCutter(bmp, idx, total){
-  return new Promise(resolve => {
-    CT.bmp = bmp; CT.resolve = resolve;
-    CT.rects = detectPieces(bmp);
-    const vw = Math.min(innerWidth - 40, 900), vh = innerHeight * .56;
-    const k = Math.min(vw / bmp.width, vh / bmp.height);
-    const cw = Math.round(bmp.width*k), ch = Math.round(bmp.height*k), d = Math.min(2, devicePixelRatio || 1);
-    cutCanvas.width = cw*d; cutCanvas.height = ch*d;
-    $('#cutStage').style.width = cw + 'px'; $('#cutStage').style.height = ch + 'px';
-    cutCanvas.getContext('2d').drawImage(bmp, 0, 0, cutCanvas.width, cutCanvas.height);
-    $('#cutCount').textContent = total > 1 ? `${idx+1} / ${total}` : '';
-    cutter.querySelectorAll('[data-edge]').forEach(b => b.setAttribute('aria-pressed', b.dataset.edge === CT.edge));
-    cutter.querySelectorAll('[data-layout]').forEach(b => b.setAttribute('aria-pressed', b.dataset.layout === CT.layout));
-    renderCutBoxes();
-    cutter.hidden = false; document.body.style.overflow = 'hidden';
-    ($('#cutGo').disabled ? $('#cutWhole') : $('#cutGo')).focus();
-  });
-}
-function finishCut(action){
-  cutter.hidden = true; document.body.style.overflow = '';
-  const r = CT.resolve; CT.resolve = null;
-  r && r({action, rects:CT.rects.map(x => ({...x})), edge:CT.edge, layout:CT.layout});
-}
-$('#cutGo').addEventListener('click', () => finishCut('pieces'));
-$('#cutWhole').addEventListener('click', () => finishCut('whole'));
-$('#cutSkip').addEventListener('click', () => finishCut('skip'));
-cutter.addEventListener('click', e => {
-  const b = e.target.closest('button'); if (!b) return;
-  if (b.dataset.edge){ CT.edge = b.dataset.edge; cutter.querySelectorAll('[data-edge]').forEach(x => x.setAttribute('aria-pressed', x === b)); }
-  if (b.dataset.layout){ CT.layout = b.dataset.layout; cutter.querySelectorAll('[data-layout]').forEach(x => x.setAttribute('aria-pressed', x === b)); }
-});
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !cutter.hidden){ e.preventDefault(); finishCut('skip'); } }, true);
-cutBoxes.addEventListener('pointerdown', e => {
-  if (e.button > 0) return;
-  const rr = cutBoxes.getBoundingClientRect();
-  const P = ev => ({x:clamp((ev.clientX-rr.left)/rr.width,0,1), y:clamp((ev.clientY-rr.top)/rr.height,0,1)});
-  const x = e.target.closest('.cx');
-  if (x){ e.preventDefault(); CT.rects.splice(+x.dataset.i, 1); renderCutBoxes(); return; }
-  e.preventDefault();
-  try { cutBoxes.setPointerCapture(e.pointerId); } catch(_){}
-  const p0 = P(e), h = e.target.closest('.ch'), bx = e.target.closest('.cbox');
-  let r, mode;
-  if (h){ r = CT.rects[+bx.dataset.i]; mode = h.dataset.c; }
-  else if (bx){ r = CT.rects[+bx.dataset.i]; mode = 'move'; }
-  else { r = {x:p0.x, y:p0.y, w:0, h:0}; CT.rects.push(r); mode = 'new'; }
-  const r0 = {...r};
-  const mv = ev => {
-    const p = P(ev), dx = p.x - p0.x, dy = p.y - p0.y;
-    if (mode === 'move'){ r.x = clamp(r0.x+dx, 0, 1-r.w); r.y = clamp(r0.y+dy, 0, 1-r.h); }
-    else if (mode === 'new'){ r.x = Math.min(p0.x,p.x); r.y = Math.min(p0.y,p.y); r.w = Math.abs(dx); r.h = Math.abs(dy); }
-    else {
-      let x0 = r0.x, y0 = r0.y, x1 = r0.x+r0.w, y1 = r0.y+r0.h;
-      if (mode.includes('w')) x0 = clamp(x0+dx, 0, x1-.03); if (mode.includes('e')) x1 = clamp(x1+dx, x0+.03, 1);
-      if (mode.includes('n')) y0 = clamp(y0+dy, 0, y1-.03); if (mode.includes('s')) y1 = clamp(y1+dy, y0+.03, 1);
-      r.x = x0; r.y = y0; r.w = x1-x0; r.h = y1-y0;
-    }
-    renderCutBoxes();
-  };
-  const up = () => {
-    cutBoxes.removeEventListener('pointermove', mv); cutBoxes.removeEventListener('pointerup', up); cutBoxes.removeEventListener('pointercancel', up);
-    if (mode === 'new' && (r.w < .03 || r.h < .03)) CT.rects.splice(CT.rects.indexOf(r), 1);
-    renderCutBoxes();
-  };
-  cutBoxes.addEventListener('pointermove', mv); cutBoxes.addEventListener('pointerup', up); cutBoxes.addEventListener('pointercancel', up);
-});
-
 /* ---------- pasting: whole photos and cut pieces ---------- */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function cropCanvas(bmp, r, max){
@@ -1023,8 +914,9 @@ async function addPhotos(files, at){
     status(`写真を読み込んでいます（${i+1}/${list.length}）`);
     let bmp;
     try { bmp = await decode(list[i]); } catch(err){ status(`「${list[i].name}」を読み込めませんでした。JPEGやPNGで試してください`); continue; }
-    const res = await openCutter(bmp, i, list.length);
-    if (res.action === 'skip') continue;
+    const rects = detectPieces(bmp);
+    const res = rects.length ? {action:'pieces', rects, edge:'auto', layout:'keep'} : {action:'whole', edge:'auto'};
+    if (rects.length) status(`写真から${rects.length}枚の紙片を切り抜いています`);
     try {
       last = res.action === 'whole' ? await pasteWhole(bmp, at, pasted, res.edge) : await pastePieces(bmp, res);
       pasted++;
@@ -1033,7 +925,7 @@ async function addPhotos(files, at){
     }
   }
   if (last) selectItem(last.id);
-  if (pasted) status(`${pasted}枚の写真から貼りました`);
+  if (pasted) status(`${pasted}枚の写真を切り貼りしました`);
 }
 
 /* ---------- drag & drop, photo metadata ---------- */
